@@ -1,0 +1,7 @@
+packages: "."
+          vendor/reflex-dom-contrib/reflex-dom-contrib.cabal
+
+constraints: uri-bytestring < 0.2.3.3 || > 0.2.3.3
+
+package *
+  documentation: True

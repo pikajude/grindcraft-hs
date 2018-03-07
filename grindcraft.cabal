@@ -1,0 +1,36 @@
+name:               grindcraft
+version:            0.1.0.0
+license:            AllRightsReserved
+license-file:       LICENSE
+author:             Jude Taylor
+maintainer:         me@jude.xyz
+category:           Game
+build-type:         Simple
+extra-source-files: ChangeLog.md
+cabal-version:      >= 1.10
+
+executable grindcraft
+  main-is:            Main.hs
+  other-modules:      Css
+  hs-source-dirs:     src
+  build-depends:      base
+                    , containers
+                    , file-embed
+                    , lifted-base
+                    , monad-control
+                    , ghcjs-dom
+                    , mtl
+                    , reflex-dom
+                    , reflex-dom-contrib
+                    , text
+                    , these
+                    , time
+  default-language:   Haskell2010
+  default-extensions: NoMonomorphismRestriction
+  other-extensions:   FlexibleContexts
+                      TemplateHaskell
+                      OverloadedStrings
+                      GADTs
+                      QuasiQuotes
+                      TypeApplications
+  ghc-options:        -Wall -Wcompat

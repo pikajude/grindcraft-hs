@@ -3,5 +3,7 @@ packages: "."
 
 constraints: uri-bytestring < 0.2.3.3 || > 0.2.3.3
 
+allow-newer: *:base, reflex-dom-contrib:*
+
 package *
   documentation: True

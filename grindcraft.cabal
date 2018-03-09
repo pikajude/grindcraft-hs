@@ -12,16 +12,23 @@ cabal-version:      >= 1.10
 executable grindcraft
   main-is:            Main.hs
   other-modules:      Css
+                      Resource
   hs-source-dirs:     src
   build-depends:      base
                     , containers
                     , file-embed
+                    , jsaddle
+                    , jsaddle-dom
+                    , jsaddle-warp
+                    , trifecta
                     , lifted-base
+                    , parsers
                     , monad-control
-                    , ghcjs-dom
                     , mtl
+                    , reflex
                     , reflex-dom
                     , reflex-dom-contrib
+                    , template-haskell
                     , text
                     , these
                     , time
@@ -34,3 +41,6 @@ executable grindcraft
                       QuasiQuotes
                       TypeApplications
   ghc-options:        -Wall -Wcompat
+
+  if impl(ghc) && os(osx)
+    ghc-options: -dynamic -threaded

@@ -5,16 +5,13 @@
 {-# Language NamedFieldPuns #-}
 {-# Language RecordWildCards #-}
 {-# Language GADTs #-}
-{-# Language QuasiQuotes #-}
 {-# Language DataKinds #-}
-{-# Language TemplateHaskell #-}
 {-# Language FlexibleContexts #-}
 {-# Language OverloadedStrings #-}
 
 module Main where
 
 import Control.Applicative
-import Control.Arrow
 import Control.Concurrent
 import Control.Monad
 import Control.Monad.Fix
@@ -22,11 +19,11 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.Align
 import Data.Bool
-import Data.Either
 import Data.Functor
+import Data.List.NonEmpty
+import Data.Map.Internal.Debug
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe
 import Data.Maybe
 import Data.Monoid
 import Data.Semigroup hiding ((<>))
@@ -34,38 +31,32 @@ import qualified Data.Set as S
 import Data.Text (Text, pack)
 import Data.Text.Encoding
 import Data.Time
-import Debug.Trace
-import GHCJS.DOM.EventM
-import GHCJS.DOM.GlobalEventHandlers (keyDown, keyUp)
-import GHCJS.DOM.KeyboardEvent
-import Reflex.Dom
+import JSDOM.EventM (event, on)
+import JSDOM.GlobalEventHandlers (keyDown, keyUp)
+import JSDOM.KeyboardEvent
+import JSDOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
+import Language.Javascript.JSaddle.Warp
+import Reflex.Dom hiding (mainWidgetWithHead, run)
 import Reflex.Dom.Contrib.CssClass
+import Reflex.Dom.Main
 
 import Css
+import Resource
+
+type ResourceConfig' = ResourceConfig Resource
+
+type Ingredients' = Ingredients Resource
 
 newtype Inventory = Inventory
     { unInventory :: Map Resource Int
     } deriving (Show)
 
-newtype Ingredients = Ingredients
-    { unIngredients :: Map Resource Int
-    } deriving (Show, Monoid, Semigroup)
-
 mapIngredients f (Ingredients i) = Ingredients (fmap f i)
 
-ingredients = Just . Ingredients
+ingredients = pure . Ingredients
 
+allResourcesSet :: S.Set Resource
 allResourcesSet = S.fromDistinctAscList [minBound .. maxBound]
-
-data Resource
-    = Wood
-    | WoodenAxe
-    | Stick
-    | Plank
-    | Stone
-    | StoneAxe
-    | CraftingTable
-    deriving (Show, Eq, Ord, Enum, Bounded)
 
 data ProgressBar t = ProgressBar
     { pbActive :: Dynamic t Bool
@@ -74,70 +65,51 @@ data ProgressBar t = ProgressBar
 
 data GameState t = GameState
     { inventoryDyn :: Dynamic t Inventory
-    , hoveredItemIngredients :: Dynamic t Ingredients
-    , ingredientsUsed :: Event t Ingredients
+    , hoveredItemIngredients :: Dynamic t (Ingredients')
+    , ingredientsUsed :: Event t (Ingredients')
+    , startingInventory :: Inventory
     , keysPressed :: Dynamic t (S.Set Text)
     , tick :: Event t Float
     }
 
-data ResourceConfig t = ResourceConfig
-    { resourceType :: Resource
-    , resourceName :: Text
-    , resourceNeeds :: Maybe Ingredients
-    , resourceWants :: Maybe Ingredients
-    , resourceDenomination :: Maybe Int
-    , resourceImg :: Maybe Text
-    , ingredientsControlVisibility :: Bool
-    , craftTime :: Maybe (Dynamic t Float)
-    , autoCraft :: Dynamic t Bool
-    }
-
-defaultResourceConfig :: ResourceConfig (SpiderTimeline Global)
-defaultResourceConfig =
-    ResourceConfig
-        { resourceType = error "resourceType not set"
-        , resourceName = error "resourceName not set"
-        , resourceNeeds = Nothing
-        , resourceWants = Nothing
-        , resourceDenomination = Nothing
-        , resourceImg = Nothing
-        , ingredientsControlVisibility = False
-        , craftTime = Nothing
-        , autoCraft = constDyn False
-        }
-
 canMake ::
-       (MonadReader (GameState t) m, Reflex t) => ResourceConfig t -> m (Dynamic t Bool)
-canMake rsrc =
-    case resourceReqs rsrc of
-        Just (Ingredients n) -> do
-            inven <- asks inventoryDyn
-            return $
-                ffor inven $ \(Inventory i) ->
-                    all (>= 0) $ M.intersectionWith (\x y -> x - y) i n
-        Nothing -> pure $ constDyn True
+       (MonadReader (GameState t) m, Reflex t) => ResourceConfig' t' -> m (Dynamic t Bool)
+canMake = fmap (fmap (> 0)) . canMakeN
 
+canMakeN ::
+       (MonadReader (GameState t) m, Reflex t) => ResourceConfig' t' -> m (Dynamic t Int)
 canMakeN rsrc =
     case resourceReqs rsrc of
         Nothing -> pure $ constDyn 1
         Just (Ingredients n) -> do
             inven <- asks inventoryDyn
-            return $
-                ffor inven $ \(Inventory i) ->
-                    minimum $ M.intersectionWith (\x y -> x `div` y) i n
+            return $ ffor inven $ \(Inventory i) -> minimum $ M.intersectionWith div i n
 
+getPressedKeys ::
+       ( MonadFix m
+       , MonadHold t m
+       , TriggerEvent t m
+       , Reflex t
+       , IsGlobalEventHandlers e
+       , IsEventTarget e
+       , MonadJSM m
+       )
+    => e
+    -> m (Dynamic t (S.Set Text))
 getPressedKeys target = do
     (e, io) <- newTriggerEvent
     _ <- f keyDown Right io
     _ <- f keyUp Left io
     foldDyn (either S.delete S.insert) (S.empty :: S.Set Text) e
   where
-    f k r io = liftIO $ on target k $ liftIO . io . r =<< getKey =<< event
+    f k r io = liftJSM $ on target k $ liftIO . io . r =<< getKey =<< event
 
 main :: IO ()
 main =
+    run 3579 $
     mainWidgetWithHead
         (do elAttr "style" (mconcat ["type" =: "text/css"]) $ text $ decodeUtf8 css
+            el "title" $ text "Grindcraft"
             elAttr
                 "link"
                 (mconcat
@@ -156,96 +128,24 @@ main =
         ks <- getPressedKeys =<< askDocument
         t <- liftIO getCurrentTime
         ticks <- clockLossy (1 / 50) t
-        rec let rsc = defaultResourceConfig
-            craftables <-
+        rec craftables <-
                 (`runReaderT` gameState) $
-                divClass "inventory" $
-                sequence
-                    [ resource
-                          rsc
-                              { resourceName = "Wood"
-                              , resourceType = Wood
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/e/e4/Acacia_Log.png?version=bfc4eeaa677ea9a2e54c5c9e29ba206a"
-                              , craftTime = Just $ constDyn 1
-                              }
-                    , resource
-                          rsc
-                              { resourceName = "Plank"
-                              , resourceType = Plank
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/b/bb/Acacia_Planks.png?version=af20f383251afeed48351e6e573473a2"
-                              , resourceNeeds = ingredients (Wood =: 1)
-                              , resourceDenomination = Just 4
-                              }
-                    , resource
-                          rsc
-                              { resourceName = "Crafting Table"
-                              , resourceType = CraftingTable
-                              , resourceNeeds = ingredients $ Plank =: 4
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/d/d4/Crafting_Table.png?version=ef20591d7a264d60d6669f5f765e54e3"
-                              }
-                    , resource
-                          rsc
-                              { resourceName = "Stick"
-                              , resourceType = Stick
-                              , resourceNeeds = ingredients (Plank =: 2)
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/a/aa/Stick.png?version=904de408b6779661deb6ea917324426e"
-                              , resourceDenomination = Just 4
-                              }
-                    , resource
-                          rsc
-                              { resourceName = "Wooden Axe"
-                              , resourceType = WoodenAxe
-                              , resourceNeeds =
-                                    ingredients $ mconcat [Plank =: 3, Stick =: 2]
-                              , resourceWants = ingredients $ CraftingTable =: 1
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/1/11/Wooden_Axe.png?version=81e7503c2a356cec0f9f738bbd0f92ad"
-                              }
-                    , resource
-                          rsc
-                              { resourceName = "Stone"
-                              , resourceType = Stone
-                              , resourceWants = ingredients $ WoodenAxe =: 1
-                              , ingredientsControlVisibility = True
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/6/67/Cobblestone.png?version=bd75abe38ce3d9309c351dbafc3881e2"
-                              , craftTime = Just $ constDyn 1.5
-                              }
-                    , resource
-                          rsc
-                              { resourceName = "Stone Axe"
-                              , resourceType = StoneAxe
-                              , resourceNeeds =
-                                    ingredients $ mconcat [Stone =: 3, Stick =: 2]
-                              , resourceWants = ingredients $ CraftingTable =: 1
-                              , resourceImg =
-                                    Just
-                                        "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/2/2f/Stone_Axe.png?version=250cc757a31c16f4d9b72bde90c0fd69"
-                              }
-                    ]
+                divClass "inventory" $ mapM resource $ allResources inventoryI
             let (craftevs', craftovers', crafts) = unzip3 craftables
                 craftevs = leftmost craftevs'
                 craftovers = mconcat craftovers'
             inventoryI <-
                 foldDyn
                     (flip $ foldr (uncurry $ M.insertWith (+)))
-                    (M.fromSet (const 0) allResourcesSet) $
+                    (unInventory (startingInventory gameState) <>
+                     M.fromSet (const 0) allResourcesSet) $
                 mergeList crafts
             let gameState =
                     GameState
                         { inventoryDyn = Inventory <$> inventoryI
                         , ingredientsUsed = craftevs
                         , hoveredItemIngredients = craftovers
+                        , startingInventory = Inventory $ Wood =: 15
                         , tick = (1 / 50) <$ updated ticks
                         , keysPressed = ks
                         }
@@ -253,12 +153,19 @@ main =
             el "pre" $
             dynText $
             pack .
-            M.showTreeWith (\k x -> show k ++ " := " ++ show x) False False .
+            showTreeWith (\k x -> show k ++ " := " ++ show x) False False .
             M.filter (> 0) . unInventory <$>
             inventoryDyn gameState
 
+resourceReqs :: ResourceConfig' t -> Maybe Ingredients'
 resourceReqs ResourceConfig {..} = salign resourceWants resourceNeeds
 
+resourceClass ::
+       Reflex t
+    => ResourceConfig' t'
+    -> Dynamic t Int
+    -> GameState t
+    -> Dynamic t CssClass
 resourceClass r@ResourceConfig {..} cnt ctx = do
     m <- canMake r ctx
     Ingredients f <- hoveredItemIngredients ctx
@@ -266,7 +173,8 @@ resourceClass r@ResourceConfig {..} cnt ctx = do
     return $
         mconcat
             [ singleClass "resource"
-            , singleClass $ bool "nonbuyable" "buyable" m
+            , singleClass $ bool "nonbuyable" "buyable" (m && craftable)
+            , cssClass $ guard (not craftable) >> Just ("nocraft" :: Text)
             , cssClass $
               guard (not m && ingredientsControlVisibility) >> Just ("hidden" :: Text)
             , cssClass $
@@ -276,6 +184,15 @@ resourceClass r@ResourceConfig {..} cnt ctx = do
                       else "has" :: Text
             ]
 
+hoveredResourceRequirements ::
+       ( MonadHold t m
+       , HasDomEvent t target 'MouseoutTag
+       , HasDomEvent t target 'MouseoverTag
+       , Reflex t
+       )
+    => ResourceConfig' t'
+    -> target
+    -> m (Dynamic t Ingredients')
 hoveredResourceRequirements r e =
     case resourceReqs r of
         Nothing -> return $ constDyn mempty
@@ -332,8 +249,8 @@ progressBar (Just craftTime) autoCraft craftClick = do
 
 resource ::
        (Reflex t, MonadWidget t m, MonadReader (GameState t) m)
-    => ResourceConfig t
-    -> m (Event t Ingredients, Dynamic t Ingredients, Event t (Resource, Int))
+    => ResourceConfig' t
+    -> m (Event t Ingredients', Dynamic t Ingredients', Event t (Resource, Int))
 resource r@ResourceConfig {..}
     -- a pattern match matching on fields (like this one) forces the
     -- GameState to whnf by default. for early resources like wood and
@@ -342,13 +259,17 @@ resource r@ResourceConfig {..}
  = do
     ~ctx@GameState {..} <- ask
     rec (e, pb) <-
+            divClass "resource-wrapper" $
             elDynKlass' "div" (resourceClass r rCount ctx) $ do
-                forM_ resourceImg $ \r -> elAttr "img" ("src" =: r) $ return ()
+                elAttr "img" ("src" =: resourceImg) $ return ()
                 elClass "span" "badge upper" $ text resourceName
-                elClass "span" "badge lower" $
-                    display rCount
+                elClass "span" "badge lower" $ display rCount
                 progressBar craftTime autoCraft rClick
-        let rClick = gate (not <$> current (pbActive pb)) $ domEvent Click e
+        let rClick =
+                gate (not <$> current (pbActive pb)) $
+                (if craftable
+                     then domEvent Click e
+                     else never)
             buyEvent =
                 attachWithMaybe
                     (\(bc, kps) _ ->
@@ -363,7 +284,11 @@ resource r@ResourceConfig {..}
                     , negate <$>
                       fforMaybe ingredientsUsed (M.lookup resourceType . unIngredients)
                     ]
-        rCount <- foldDyn (+) 0 rCountEv
+        rCount <-
+            foldDyn
+                (+)
+                (M.findWithDefault 0 resourceType $ unInventory startingInventory)
+                rCountEv
     rhovered <- hoveredResourceRequirements r e
     return
         ( fmapMaybe id $

@@ -2,9 +2,17 @@
     font-family: Lato, sans-serif;
 }
 
+.resource-wrapper {
+    float: left;
+}
+
 .inventory {
     display: table;
     border-spacing: 15px;
+}
+
+.resource.nocraft {
+    cursor: default;
 }
 
 .resource {
@@ -18,7 +26,7 @@
     position: relative;
     cursor: pointer;
     margin: 8px;
-    background-color: #aaa;
+    background-color: #888;
 }
 
 .resource .badge {
@@ -64,6 +72,7 @@
 
 .buyable {
     border-style: outset;
+    background-color: #ccc;
 }
 
 .needed {
@@ -71,5 +80,9 @@
 }
 
 .has {
-    border-color: green;
+    border-color: lawngreen;
+}
+
+pre {
+    font-family: monospace;
 }

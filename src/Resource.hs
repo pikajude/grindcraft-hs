@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -ddump-splices #-}
 {-# Language FlexibleContexts #-}
-{-# Language DerivingStrategies #-}
-{-# Language QuasiQuotes #-}
+{-# Language TemplateHaskell #-}
 
 module Resource
     ( allResources
@@ -10,125 +9,7 @@ module Resource
     , Resource(..)
     ) where
 
-import Data.Map (Map)
-import Reflex.Class
 import Resource.TH
 import Resource.Types
 
-[r|
-Wood
-    name "Wood"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/e/e4/Acacia_Log.png?version=bfc4eeaa677ea9a2e54c5c9e29ba206a"
-    time
-        default 3
-        WoodenAxe 1.5
-        StoneAxe 0.75
-        IronAxe 0.5
-
-Plank
-    name "Plank"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/b/bb/Acacia_Planks.png?version=af20f383251afeed48351e6e573473a2"
-    needs
-        Wood 1
-    denom 4
-
-CraftingTable
-    name "Crafting Table"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/d/d4/Crafting_Table.png?version=ef20591d7a264d60d6669f5f765e54e3"
-    needs
-        Plank 4
-
-Furnace
-    name "Furnace"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/0/0f/Furnace.png?version=61804f51a03a60f5a160f8d0bbcf3d29"
-    needs
-        Stone 8
-
-Stick
-    name "Stick"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/a/aa/Stick.png?version=904de408b6779661deb6ea917324426e"
-    needs
-        Plank 2
-    denom 4
-
-WoodenAxe
-    name "Wooden Axe"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/1/11/Wooden_Axe.png?version=81e7503c2a356cec0f9f738bbd0f92ad"
-    needs
-        Plank 3
-        Stick 2
-    wants
-        CraftingTable 1
-
-WoodenPickaxe
-    name "Wooden Pickaxe"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/b/b3/Wooden_Pickaxe.png?version=a03b03779b0828d83c59363703ca7dc0"
-    needs
-        Plank 3
-        Stick 2
-    wants
-        CraftingTable 1
-
-Stone
-    name "Stone"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/6/67/Cobblestone.png?version=bd75abe38ce3d9309c351dbafc3881e2"
-    hidden
-    wants
-        WoodenPickaxe 1
-    time
-        default 1.5
-
-StoneAxe
-    name "Stone Axe"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/2/2f/Stone_Axe.png?version=250cc757a31c16f4d9b72bde90c0fd69"
-    needs
-        Stone 3
-        Stick 2
-    wants
-        CraftingTable 1
-
-StonePickaxe
-    name "Stone Pickaxe"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/4/40/Stone_Pickaxe.png?version=861f4046da228c2b49707b3b5e8772a9"
-    needs
-        Stone 3
-        Stick 2
-    wants
-        CraftingTable 1
-
-CoalOre
-    name "Coal Ore"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/f/fe/Coal_Ore.png?version=32efa68cee0d71d2e447311b3be9052a"
-    wants
-        StonePickaxe 1
-    produces Coal 2-4
-
-Coal
-    name "Coal"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/a/a7/Coal.png?version=5be158dea6607e11cf2721d33fb2ff4f"
-    nocraft
-
-IronOre
-    name "Iron Ore"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/8/87/Iron_Ore.png?version=58620d0e13ec2a4e43d59c4dee2aabc2"
-    wants
-        StonePickaxe 1
-
-IronIngot
-    name "Iron Ingot"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/0/0a/Iron_Ingot.png?version=82816b8ae44a4f6b0bb43f9bd8b3f1c6"
-    needs
-        IronOre 1
-        Coal 1
-    wants
-        Furnace 1
-
-IronAxe
-    name "Iron Axe"
-    img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/8/81/Iron_Axe.png?version=665b868ad12b23f2f7e3e57ec46bcd36"
-    needs
-        IronIngot 3
-        Stick 2
-    wants
-        CraftingTable 1
-|]
+genResource "resource.txt"

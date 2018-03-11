@@ -6,20 +6,22 @@ import Data.List.NonEmpty
 import qualified Data.Map as M
 import Data.Map (Map)
 import Data.Semigroup (Semigroup)
+import Data.Set (Set)
 import Data.Text (Text)
+import Numeric.Natural
 import Reflex.Dom
 
 newtype Ingredients r = Ingredients
-    { unIngredients :: Map r Int
+    { unIngredients :: Map r Natural
     } deriving (Show, Monoid, Semigroup)
 
 data ResourceConfig r t = ResourceConfig
     { resourceType :: r
     , resourceName :: Text
-    , resourceNeeds :: Maybe (Ingredients r)
-    , resourceWants :: Maybe (Ingredients r)
+    , resourceNeeds :: Map r Natural
+    , resourceWants :: [Set r]
     , resourceProduces :: Maybe (r, Maybe (Int, Int))
-    , resourceDenomination :: Maybe Int
+    , resourceDenomination :: Maybe Natural
     , resourceImg :: Text
     , ingredientsControlVisibility :: Bool
     , craftable :: Bool
@@ -27,13 +29,14 @@ data ResourceConfig r t = ResourceConfig
     , autoCraft :: Dynamic t Bool
     }
 
-defaultResourceConfig :: ResourceConfig a (SpiderTimeline Global)
+defaultResourceConfig :: (Ord a, Reflex t) => ResourceConfig a t
 defaultResourceConfig =
     ResourceConfig
         { resourceType = error "resourceType not set"
         , resourceName = error "resourceName not set"
-        , resourceNeeds = Nothing
-        , resourceWants = Nothing
+        , resourceNeeds = mempty
+        , resourceWants = []
+        , resourceProduces = Nothing
         , resourceDenomination = Nothing
         , resourceImg = error "resourceImg not set"
         , ingredientsControlVisibility = False
@@ -43,10 +46,14 @@ defaultResourceConfig =
         }
 
 craftTimesOf ::
-       (Eq a, Ord a, Monad m) => Double -> Map a Double -> m (Map a Int) -> m Double
+       (Show a, Eq a, Ord a, Monad m)
+    => Double
+    -> Map a Double
+    -> m (Map a Natural)
+    -> m Double
 craftTimesOf def times inven =
     ffor inven $ \i ->
-        case M.filter (> 0) $ M.intersection times i of
+        case M.intersection times $ M.filter (> 0) i of
             x
                 | M.null x -> def
-                | otherwise -> maximum $ M.elems x
+                | otherwise -> minimum $ M.elems x

@@ -1,159 +1,93 @@
+{-# Language DeriveLift #-}
+{-# Language StandaloneDeriving #-}
+{-# Language RankNTypes #-}
 {-# Language TemplateHaskell #-}
 
 module Resource.TH
-    ( r
+    ( genResource
     ) where
 
 import Control.Applicative
 import Control.Arrow
-import Control.Monad.Reader
+import Control.Monad.Reader hiding (lift)
 import Data.Functor
+import Data.List
+import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.Map as M
+import Data.Map (Map)
 import Data.Maybe
+import qualified Data.Set as S
 import qualified Data.Text as T
 import Language.Haskell.TH.Lib
 import Language.Haskell.TH.Quote
 import Language.Haskell.TH.Syntax
+import Numeric.Natural
+import Reflex.Class (Dynamic, Reflex)
+import Resource.Parser (RField(..), parser)
 import Resource.Types
 import Text.Parser.LookAhead
 import Text.Trifecta
 
-r :: QuasiQuoter
-r =
-    QuasiQuoter
-        { quoteDec =
-              \s -> do
-                  qb <- newName "qb"
-                  let exprs =
-                          parseString (spaces >> (rsrcP qb `sepBy` some newline)) mempty s
-                  case unzip <$> exprs of
-                      Success (cons, a) ->
-                          sequence
-                              [ funD
-                                    (mkName "allResources")
-                                    [clause [varP qb] (normalB (listE a)) []]
-                              , dataD
-                                    (cxt [])
-                                    (mkName "Resource")
-                                    []
-                                    Nothing
-                                    (map mkCon cons)
-                                    [ derivClause
-                                          (Just StockStrategy)
-                                          [ [t|Ord|]
-                                          , [t|Eq|]
-                                          , [t|Show|]
-                                          , [t|Bounded|]
-                                          , [t|Enum|]
-                                          ]
-                                    ]
-                              ]
-                      Failure m -> error $ show m
-        }
-  where
-    mkCon str = normalC (mkName str) []
+deriving instance Lift a => Lift (NonEmpty a)
 
-rsrcP inventoryVar = do
-    w <- some alphaNum
-    newline
-    fs <- fields
-    return $
-        ( w
-        , recUpdE [|defaultResourceConfig|] $
-          map (fieldToConQ inventoryVar) (RType w : fs))
-
-fields = go =<< lookAhead (some space)
+genResource :: String -> DecsQ
+genResource s = do
+    result <- runIO $ parseFromFileEx parser s
+    case result of
+        Success (a, _) -> do
+            n <- newName "arg"
+            sequence
+                [ dataD
+                      (cxt [])
+                      (mkName "Resource")
+                      []
+                      Nothing
+                      (map (mkRCon . fst) a)
+                      [ derivClause
+                            Nothing
+                            [[t|Show|], [t|Ord|], [t|Eq|], [t|Bounded|], [t|Enum|]]
+                      ]
+                , sigD
+                      (mkName "allResources")
+                      [t|forall t. Reflex t =>
+                                       Dynamic t (Map $(conT $ mkName "Resource") Natural) -> [ResourceConfig $(conT $
+                                                                                                                mkName
+                                                                                                                    "Resource") t]|]
+                , funD
+                      (mkName "allResources")
+                      [clause [varP n] (normalB (listE $ map (mkResource n) a)) []]
+                ]
+        Failure xs -> error $ show xs
   where
-    go padding = do
-        string padding
-        fieldName <- some alphaNum
-        many $ satisfy (== ' ')
-        fieldVal <-
-            case fieldName of
-                "name" -> (RName <$> imgField) <* newline
-                "img" -> (Img <$> imgField) <* newline
-                "denom" -> (Denom <$> decimal) <* newline
-                "time" -> newline *> (uncurry CraftTimes <$> timeField)
-                "needs" -> newline *> (Needs <$> needsField)
-                "wants" -> newline *> (Wants <$> needsField)
-                "hidden" -> newline $> Hidden
-                "nocraft" -> newline $> NoCraft
-                "produces" -> (uncurry Produces <$> produceField) <* newline
-                x -> error $ show x
-        (:) fieldVal . fromMaybe [] <$> optional (go padding)
-    imgField = between (char '"') (char '"') $ some (satisfy (/= '"'))
+    mkRCon s = normalC (mkName s) []
 
-produceField = do
-    w <- some alphaNum
-    spaces
-    range <- optional $ do
-        r1 <- decimal
-        spaces
-        char '-'
-        spaces
-        r2 <- decimal
-        return (r1, r2)
-    return (w, range)
+mkResource n (s, fields) =
+    recUpdE
+        [|defaultResourceConfig|]
+        (pure ('resourceType, ConE (rName s)) : map (mkUpd n) fields)
 
-timeField = go =<< lookAhead (some space)
+mkUpd _ (RName s) = strength ('resourceName, [|T.pack $(stringE s)|])
+mkUpd _ (RImg s) = strength ('resourceImg, [|T.pack $(stringE s)|])
+mkUpd p (RTime (def, xs)) =
+    strength
+        ( 'craftTime
+        , [|Just (craftTimesOf def (M.fromList $(listE $ map timePair xs)) $(varE p))|])
   where
-    go padding = do
-        string padding
-        needsName <- some alphaNum
-        spaces
-        craftTime <- read <$> some (digit <|> char '.')
-        newline
-        case needsName of
-            "default" ->
-                first (const craftTime) . fromMaybe (craftTime, []) <$>
-                optional (go padding)
-            _ ->
-                second ((:) (needsName, craftTime)) . fromMaybe (0, []) <$>
-                optional (go padding)
+    timePair (n, x) = [|($(rCon n), x)|]
+mkUpd _ (RNeeds ps) = strength ('resourceNeeds, [|M.fromList $(liftNeeds ps)|])
+mkUpd _ (RWants ps) = strength ('resourceWants, liftWants ps)
+mkUpd _ (RProduces (x, y)) = strength ('resourceProduces, [|Just ($(rCon x), y)|])
+mkUpd _ (RDenom n) = strength ('resourceDenomination, [|Just n|])
+mkUpd _ RHidden = strength ('ingredientsControlVisibility, [|True|])
+mkUpd _ RNocraft = strength ('craftable, [|False|])
 
-needsField = go =<< lookAhead (some space)
-  where
-    go padding =
-        some $ do
-            string padding
-            needsName <- some alphaNum
-            spaces
-            craftTime <- decimal
-            newline
-            return (needsName, craftTime)
+liftWants = listE . map (\(p :| ps, _) -> [|S.fromList $(listE $ map rCon (p : ps))|])
 
-data FieldVal
-    = Img String
-    | CraftTimes Double
-                 [(String, Double)]
-    | Needs [(String, Integer)]
-    | Wants [(String, Integer)]
-    | Produces String (Maybe (Integer, Integer))
-    | RType String
-    | RName String
-    | Denom Integer
-    | Hidden
-    | NoCraft
-    deriving (Show)
+liftNeeds =
+    listE . map (\(p :| [], n) -> [|($(rCon p), $(litE $ integerL $ fromMaybe 1 n))|])
 
-fieldToConQ _ (Img s) = (,) 'resourceImg <$> [|T.pack $(stringE s)|]
-fieldToConQ _ (RType s) = (,) 'resourceType <$> conE (mkName s)
-fieldToConQ _ (RName s) = (,) 'resourceName <$> [|T.pack $(stringE s)|]
-fieldToConQ ivar (CraftTimes n cs) =
-    (,) 'craftTime <$>
-    [|Just (craftTimesOf n (M.fromList $(listE (map ctime cs))) $(varE ivar))|]
-  where
-    ctime (s, d) = [|($(conE (mkName s)), d)|]
-fieldToConQ _ (Needs rs) =
-    (,) 'resourceNeeds <$> [|Just (Ingredients (M.fromList $(listE (map rt rs))))|]
-  where
-    rt (s, d) = [|($(conE (mkName s)), d)|]
-fieldToConQ _ (Wants rs) =
-    (,) 'resourceWants <$> [|Just (Ingredients (M.fromList $(listE (map rt rs))))|]
-  where
-    rt (s, d) = [|($(conE (mkName s)), d)|]
-fieldToConQ _ (Denom n) = (,) 'resourceDenomination <$> [|Just n|]
-fieldToConQ _ Hidden = (,) 'ingredientsControlVisibility <$> [|True|]
-fieldToConQ _ NoCraft = (,) 'craftable <$> [|False|]
-fieldToConQ _ (Produces n r) = (,) 'resourceProduces <$> [|Just ($(conE (mkName n)), r)|]
-fieldToConQ _ x = error $ show x
+rName s = mkName ("Resource." ++ s)
+
+rCon = conE . rName
+
+strength = uncurry (fmap . (,))

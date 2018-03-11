@@ -13,18 +13,22 @@ executable grindcraft
   main-is:            Main.hs
   other-modules:      Css
                       Resource
+                      Resource.Parser
+                      Resource.TH
+                      Resource.Types
   hs-source-dirs:     src
   build-depends:      base
                     , containers
                     , file-embed
+                    , indentation-trifecta
                     , jsaddle
                     , jsaddle-dom
                     , jsaddle-warp
-                    , trifecta
                     , lifted-base
-                    , parsers
                     , monad-control
                     , mtl
+                    , parsers
+                    , random
                     , reflex
                     , reflex-dom
                     , reflex-dom-contrib
@@ -32,6 +36,7 @@ executable grindcraft
                     , text
                     , these
                     , time
+                    , trifecta
   default-language:   Haskell2010
   default-extensions: NoMonomorphismRestriction
   other-extensions:   FlexibleContexts

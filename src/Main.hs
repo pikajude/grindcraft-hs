@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -ddump-splices #-}
+{-# Language ScopedTypeVariables #-}
 {-# Language RecursiveDo #-}
 {-# Language MultiWayIf #-}
 {-# Language GeneralizedNewtypeDeriving #-}
@@ -20,40 +21,62 @@ import Control.Monad.Reader
 import Data.Align
 import Data.Bool
 import Data.Functor
-import Data.List.NonEmpty
+import Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.List.NonEmpty as N
 import Data.Map.Internal.Debug
-import Data.Map.Strict (Map)
+import Data.Map.Strict (Map, fromList)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Monoid
-import Data.Semigroup hiding ((<>))
 import qualified Data.Set as S
 import Data.Text (Text, pack)
 import Data.Text.Encoding
 import Data.Time
+import Debug.Trace
 import JSDOM.EventM (event, on)
 import JSDOM.GlobalEventHandlers (keyDown, keyUp)
 import JSDOM.KeyboardEvent
 import JSDOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
 import Language.Javascript.JSaddle.Warp
+import Numeric.Natural
 import Reflex.Dom hiding (mainWidgetWithHead, run)
 import Reflex.Dom.Contrib.CssClass
 import Reflex.Dom.Main
+import System.Random
 
 import Css
 import Resource
+
+(<&>) :: Functor f => f a -> (a -> b) -> f b
+(<&>) = ffor
+
+lookupSet k ((p, v):xs)
+    | k `elem` p = Just v
+    | otherwise = lookupSet k xs
+lookupSet _ [] = Nothing
+
+data ResourceEffects t = ResourceEffects
+    { resourcesConsumed :: Event t (Map Resource Natural)
+    , ingredientsOfHoveredThing :: Dynamic t [(NonEmpty Resource, Natural)]
+    , resourceTotal :: Production t
+    }
+
+data Production t
+    = ProducesSelf (Event t (Resource, Int))
+    | ProducesOther (Event t (Resource, Int))
+
+unProd (ProducesSelf e) = e
+unProd (ProducesOther e) = e
 
 type ResourceConfig' = ResourceConfig Resource
 
 type Ingredients' = Ingredients Resource
 
 newtype Inventory = Inventory
-    { unInventory :: Map Resource Int
+    { unInventory :: Map Resource Natural
     } deriving (Show)
 
 mapIngredients f (Ingredients i) = Ingredients (fmap f i)
-
-ingredients = pure . Ingredients
 
 allResourcesSet :: S.Set Resource
 allResourcesSet = S.fromDistinctAscList [minBound .. maxBound]
@@ -65,25 +88,45 @@ data ProgressBar t = ProgressBar
 
 data GameState t = GameState
     { inventoryDyn :: Dynamic t Inventory
-    , hoveredItemIngredients :: Dynamic t (Ingredients')
-    , ingredientsUsed :: Event t (Ingredients')
+    , hoveredItemIngredients :: Dynamic t [(NonEmpty Resource, Natural)]
+    , ingredientsUsed :: Event t (Map Resource Natural)
     , startingInventory :: Inventory
     , keysPressed :: Dynamic t (S.Set Text)
     , tick :: Event t Float
     }
+
+insertInts :: NonEmpty (Resource, Int) -> Map Resource Natural -> Map Resource Natural
+insertInts =
+    flip $
+    foldr
+        (\(r, n) ->
+             M.insertWith
+                 (if n < 0
+                      then subtract
+                      else (+))
+                 r
+                 (fromIntegral $ abs n))
 
 canMake ::
        (MonadReader (GameState t) m, Reflex t) => ResourceConfig' t' -> m (Dynamic t Bool)
 canMake = fmap (fmap (> 0)) . canMakeN
 
 canMakeN ::
-       (MonadReader (GameState t) m, Reflex t) => ResourceConfig' t' -> m (Dynamic t Int)
-canMakeN rsrc =
-    case resourceReqs rsrc of
-        Nothing -> pure $ constDyn 1
-        Just (Ingredients n) -> do
-            inven <- asks inventoryDyn
-            return $ ffor inven $ \(Inventory i) -> minimum $ M.intersectionWith div i n
+       (MonadReader (GameState t) m, Reflex t)
+    => ResourceConfig' t'
+    -> m (Dynamic t Natural)
+canMakeN rsrc = do
+    let (s, m) = resourceReqs rsrc
+    inven <- asks inventoryDyn
+    return $
+        inven <&> \(Inventory i) ->
+            if all (hasOneOf i) s
+                then if M.null m
+                         then 1
+                         else minimum $ M.intersectionWith div i m
+                else 0
+  where
+    hasOneOf inv rset = any (\r -> M.findWithDefault 0 r inv > 0) rset
 
 getPressedKeys ::
        ( MonadFix m
@@ -108,20 +151,20 @@ main :: IO ()
 main =
     run 3579 $
     mainWidgetWithHead
-        (do elAttr "style" (mconcat ["type" =: "text/css"]) $ text $ decodeUtf8 css
+        (do elAttr "style" ("type" =: "text/css") $ text $ decodeUtf8 css
             el "title" $ text "Grindcraft"
             elAttr
                 "link"
-                (mconcat
-                     [ "rel" =: "stylesheet"
-                     , "href" =: "https://meyerweb.com/eric/tools/css/reset/reset.css"
+                (fromList
+                     [ ("rel", "stylesheet")
+                     , ("href", "https://meyerweb.com/eric/tools/css/reset/reset.css")
                      ]) $
                 return ()
             elAttr
                 "link"
-                (mconcat
-                     [ "rel" =: "stylesheet"
-                     , "href" =: "https://fonts.googleapis.com/css?family=Lato:400,900"
+                (fromList
+                     [ ("rel", "stylesheet")
+                     , ("href", "https://fonts.googleapis.com/css?family=Lato:400,900")
                      ]) $
                 return ()) $
     divClass "container" $ do
@@ -131,21 +174,21 @@ main =
         rec craftables <-
                 (`runReaderT` gameState) $
                 divClass "inventory" $ mapM resource $ allResources inventoryI
-            let (craftevs', craftovers', crafts) = unzip3 craftables
+            let (craftevs', craftovers', crafts) =
+                    ( map resourcesConsumed craftables
+                    , map ingredientsOfHoveredThing craftables
+                    , map (unProd . resourceTotal) craftables)
                 craftevs = leftmost craftevs'
                 craftovers = mconcat craftovers'
             inventoryI <-
-                foldDyn
-                    (flip $ foldr (uncurry $ M.insertWith (+)))
-                    (unInventory (startingInventory gameState) <>
-                     M.fromSet (const 0) allResourcesSet) $
+                foldDyn insertInts (M.fromSet (const 0) allResourcesSet) $
                 mergeList crafts
             let gameState =
                     GameState
                         { inventoryDyn = Inventory <$> inventoryI
                         , ingredientsUsed = craftevs
                         , hoveredItemIngredients = craftovers
-                        , startingInventory = Inventory $ Wood =: 15
+                        , startingInventory = Inventory $ mconcat [StonePickaxe =: 1]
                         , tick = (1 / 50) <$ updated ticks
                         , keysPressed = ks
                         }
@@ -157,18 +200,18 @@ main =
             M.filter (> 0) . unInventory <$>
             inventoryDyn gameState
 
-resourceReqs :: ResourceConfig' t -> Maybe Ingredients'
-resourceReqs ResourceConfig {..} = salign resourceWants resourceNeeds
+resourceReqs :: ResourceConfig' t -> ([S.Set Resource], Map Resource Natural)
+resourceReqs ResourceConfig {..} = (resourceWants, resourceNeeds)
 
 resourceClass ::
        Reflex t
     => ResourceConfig' t'
-    -> Dynamic t Int
+    -> Dynamic t Natural
     -> GameState t
     -> Dynamic t CssClass
 resourceClass r@ResourceConfig {..} cnt ctx = do
     m <- canMake r ctx
-    Ingredients f <- hoveredItemIngredients ctx
+    f <- hoveredItemIngredients ctx
     rc <- cnt
     return $
         mconcat
@@ -178,7 +221,7 @@ resourceClass r@ResourceConfig {..} cnt ctx = do
             , cssClass $
               guard (not m && ingredientsControlVisibility) >> Just ("hidden" :: Text)
             , cssClass $
-              ffor (M.lookup resourceType f) $ \n ->
+              lookupSet resourceType f <&> \n ->
                   if rc < n
                       then "needed"
                       else "has" :: Text
@@ -192,13 +235,14 @@ hoveredResourceRequirements ::
        )
     => ResourceConfig' t'
     -> target
-    -> m (Dynamic t Ingredients')
+    -> m (Dynamic t [(NonEmpty Resource, Natural)])
 hoveredResourceRequirements r e =
-    case resourceReqs r of
-        Nothing -> return $ constDyn mempty
-        Just n ->
-            holdDyn mempty $
-            leftmost [n <$ domEvent Mouseover e, mempty <$ domEvent Mouseout e]
+    holdDyn mempty $
+    leftmost [(rlist ++ mp') <$ domEvent Mouseover e, mempty <$ domEvent Mouseout e]
+  where
+    (sets, mp) = resourceReqs r
+    rlist = map (\s -> (N.fromList (S.toList s), 1)) sets
+    mp' = map (\(k, v) -> (k :| [], v)) $ M.toList mp
 
 progressBar ::
        ( DomBuilder t m
@@ -239,18 +283,18 @@ progressBar (Just craftTime) autoCraft craftClick = do
     return $ ProgressBar progressActive craftEnd
   where
     mkClass c p =
-        mconcat
-            [ "class" =:
-              renderClass
-                  (mconcat
-                       [singleClass "progress-bar", singleClass $ bool "empty" "full" p])
-            , "style" =: pack ("transition-duration: " ++ show c ++ "s")
+        fromList
+            [ ( "class"
+              , renderClass
+                    (mconcat
+                         [singleClass "progress-bar", singleClass $ bool "empty" "full" p]))
+            , ("style", pack ("transition-duration: " ++ show c ++ "s"))
             ]
 
 resource ::
        (Reflex t, MonadWidget t m, MonadReader (GameState t) m)
     => ResourceConfig' t
-    -> m (Event t Ingredients', Dynamic t Ingredients', Event t (Resource, Int))
+    -> m (ResourceEffects t)
 resource r@ResourceConfig {..}
     -- a pattern match matching on fields (like this one) forces the
     -- GameState to whnf by default. for early resources like wood and
@@ -258,6 +302,7 @@ resource r@ResourceConfig {..}
     -- the initial GameState, we must not force it at all
  = do
     ~ctx@GameState {..} <- ask
+    let rCount = inventoryDyn <&> \(Inventory i) -> M.findWithDefault 0 resourceType i
     rec (e, pb) <-
             divClass "resource-wrapper" $
             elDynKlass' "div" (resourceClass r rCount ctx) $ do
@@ -265,11 +310,11 @@ resource r@ResourceConfig {..}
                 elClass "span" "badge upper" $ text resourceName
                 elClass "span" "badge lower" $ display rCount
                 progressBar craftTime autoCraft rClick
-        let rClick =
-                gate (not <$> current (pbActive pb)) $
-                (if craftable
-                     then domEvent Click e
-                     else never)
+        let canStartCrafting
+                | craftable =
+                    zipDynWith (\a m -> not a && m) (pbActive pb) (canMake r ctx)
+                | otherwise = constDyn False
+            rClick = gate (current canStartCrafting) (domEvent Click e)
             buyEvent =
                 attachWithMaybe
                     (\(bc, kps) _ ->
@@ -280,18 +325,28 @@ resource r@ResourceConfig {..}
                     (pbComplete pb)
             rCountEv =
                 leftmost
-                    [ fmap (fromMaybe 1 resourceDenomination *) buyEvent
-                    , negate <$>
-                      fforMaybe ingredientsUsed (M.lookup resourceType . unIngredients)
+                    [ fromIntegral <$> fmap (fromMaybe 1 resourceDenomination *) buyEvent
+                    , negate . fromIntegral <$>
+                      fforMaybe ingredientsUsed (M.lookup resourceType)
                     ]
-        rCount <-
-            foldDyn
-                (+)
-                (M.findWithDefault 0 resourceType $ unInventory startingInventory)
-                rCountEv
     rhovered <- hoveredResourceRequirements r e
+    let debitedResources = buyEvent <&> \cnt -> fmap (cnt *) resourceNeeds
+    producedResources <-
+        case resourceProduces of
+            Just (n, rng) ->
+                fmap Just $
+                performEventAsync $
+                buyEvent <&> \cnt cb ->
+                    liftIO $ do
+                        produced <- maybe (pure 1) randomRIO rng
+                        cb (n, fromIntegral cnt * produced)
+            Nothing -> pure Nothing
     return
-        ( fmapMaybe id $
-          ffor buyEvent $ \cnt -> fmap (mapIngredients (cnt *)) resourceNeeds
-        , rhovered
-        , (,) resourceType <$> rCountEv)
+        ResourceEffects
+            { resourcesConsumed = debitedResources
+            , ingredientsOfHoveredThing = rhovered
+            , resourceTotal =
+                  case producedResources of
+                      Just e -> ProducesOther e
+                      Nothing -> ProducesSelf $ (,) resourceType <$> rCountEv
+            }

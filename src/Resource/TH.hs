@@ -1,3 +1,4 @@
+{-# Language CPP #-}
 {-# Language DeriveLift #-}
 {-# Language StandaloneDeriving #-}
 {-# Language RankNTypes #-}
@@ -21,20 +22,39 @@ import qualified Data.Text as T
 import Language.Haskell.TH.Lib
 import Language.Haskell.TH.Quote
 import Language.Haskell.TH.Syntax
-import Numeric.Natural
 import Reflex.Class (Dynamic, Reflex)
 import Resource.Parser (RField(..), parser)
 import Resource.Types
 import Text.Parser.LookAhead
 import Text.Trifecta
 
+#ifdef ghcjs_HOST_OS
+type Natural = Integer
+#else
+import Numeric.Natural
+#endif
+
 deriving instance Lift a => Lift (NonEmpty a)
+
+#if !MIN_VERSION_template_haskell(2,12,0)
+dClause _ x = cxt x
+#else
+dClause a b = [derivClause a b]
+#endif
 
 genResource :: String -> DecsQ
 genResource s = do
     result <- runIO $ parseFromFileEx parser s
     case result of
-        Success (a, _) -> do
+        Success (unprims', _) -> do
+            let prims = filter (\(_, x) -> RPrim `elem` x) unprims'
+                unprims =
+                    map
+                        (\(c, x) ->
+                             if RPrim `elem` x
+                                 then (c, RNocraft : x)
+                                 else (c, x))
+                        unprims'
             n <- newName "arg"
             sequence
                 [ dataD
@@ -42,11 +62,10 @@ genResource s = do
                       (mkName "Resource")
                       []
                       Nothing
-                      (map (mkRCon . fst) a)
-                      [ derivClause
-                            Nothing
-                            [[t|Show|], [t|Ord|], [t|Eq|], [t|Bounded|], [t|Enum|]]
-                      ]
+                      (map (mkRCon . fst) unprims)
+                      (dClause
+                           Nothing
+                           [[t|Show|], [t|Ord|], [t|Eq|], [t|Bounded|], [t|Enum|]])
                 , sigD
                       (mkName "allResources")
                       [t|forall t. Reflex t =>
@@ -55,7 +74,16 @@ genResource s = do
                                                                                                                     "Resource") t]|]
                 , funD
                       (mkName "allResources")
-                      [clause [varP n] (normalB (listE $ map (mkResource n) a)) []]
+                      [clause [varP n] (normalB (listE $ map (mkResource n) unprims)) []]
+                , sigD
+                      (mkName "primResources")
+                      [t|forall t. Reflex t =>
+                                       Dynamic t (Map $(conT $ mkName "Resource") Natural) -> [ResourceConfig $(conT $
+                                                                                                                mkName
+                                                                                                                    "Resource") t]|]
+                , funD
+                      (mkName "primResources")
+                      [clause [varP n] (normalB (listE $ map (mkResource n) prims)) []]
                 ]
         Failure xs -> error $ show xs
   where
@@ -80,6 +108,7 @@ mkUpd _ (RProduces (x, y)) = strength ('resourceProduces, [|Just ($(rCon x), y)|
 mkUpd _ (RDenom n) = strength ('resourceDenomination, [|Just n|])
 mkUpd _ RHidden = strength ('ingredientsControlVisibility, [|True|])
 mkUpd _ RNocraft = strength ('craftable, [|False|])
+mkUpd _ RPrim = strength ('resourcePrim, [|True|])
 
 liftWants = listE . map (\(p :| ps, _) -> [|S.fromList $(listE $ map rCon (p : ps))|])
 

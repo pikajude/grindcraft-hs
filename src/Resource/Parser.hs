@@ -32,6 +32,7 @@ attrs =
         , aProd <* nl
         , RHidden <$ string "hidden" <* nl
         , RNocraft <$ string "nocraft" <* nl
+        , RPrim <$ string "prim" <* nl
         , aTime
         , aWants
         ]
@@ -112,7 +113,8 @@ data RField
     | RProduces (String, Maybe (Integer, Integer))
     | RHidden
     | RNocraft
-    deriving (Show)
+    | RPrim
+    deriving (Show, Eq)
 
 parser =
     runIndentationParserT @Char resourcesP (mkIndentationState 0 infIndentation True Any)

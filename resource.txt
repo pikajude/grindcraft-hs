@@ -1,6 +1,7 @@
 Wood
     name "Wood"
     img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/e/e4/Acacia_Log.png?version=bfc4eeaa677ea9a2e54c5c9e29ba206a"
+    prim
     time
         default 3
         WoodenAxe 1.5
@@ -54,7 +55,7 @@ WoodenPickaxe
 Stone
     name "Stone"
     img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/6/67/Cobblestone.png?version=bd75abe38ce3d9309c351dbafc3881e2"
-    hidden
+    prim
     wants
         WoodenPickaxe | StonePickaxe | IronPickaxe
     time
@@ -84,6 +85,7 @@ StonePickaxe
 CoalOre
     name "Coal Ore"
     img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/f/fe/Coal_Ore.png?version=32efa68cee0d71d2e447311b3be9052a"
+    prim
     wants
         StonePickaxe | WoodenPickaxe | IronPickaxe
     produces Coal 2-4
@@ -101,6 +103,7 @@ Coal
 IronOre
     name "Iron Ore"
     img "https://d1u5p3l4wpay3k.cloudfront.net/minecraft_gamepedia/8/87/Iron_Ore.png?version=58620d0e13ec2a4e43d59c4dee2aabc2"
+    prim
     wants
         StonePickaxe
 

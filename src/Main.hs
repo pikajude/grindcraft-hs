@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -ddump-splices #-}
+{-# Language CPP #-}
 {-# Language ScopedTypeVariables #-}
 {-# Language RecursiveDo #-}
 {-# Language MultiWayIf #-}
@@ -23,8 +24,7 @@ import Data.Bool
 import Data.Functor
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as N
-import Data.Map.Internal.Debug
-import Data.Map.Strict (Map, fromList)
+import Data.Map.Strict (Map, fromList, showTreeWith)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Monoid
@@ -33,12 +33,7 @@ import Data.Text (Text, pack)
 import Data.Text.Encoding
 import Data.Time
 import Debug.Trace
-import JSDOM.EventM (event, on)
-import JSDOM.GlobalEventHandlers (keyDown, keyUp)
-import JSDOM.KeyboardEvent
-import JSDOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
 import Language.Javascript.JSaddle.Warp
-import Numeric.Natural
 import Reflex.Dom hiding (mainWidgetWithHead, run)
 import Reflex.Dom.Contrib.CssClass
 import Reflex.Dom.Main
@@ -46,6 +41,19 @@ import System.Random
 
 import Css
 import Resource
+import Natural
+
+#ifdef ghcjs_HOST_OS
+import GHCJS.DOM.EventM (event, on)
+import GHCJS.DOM.GlobalEventHandlers (keyDown, keyUp)
+import GHCJS.DOM.KeyboardEvent
+import GHCJS.DOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
+#else
+import JSDOM.EventM (event, on)
+import JSDOM.GlobalEventHandlers (keyDown, keyUp)
+import JSDOM.KeyboardEvent
+import JSDOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
+#endif
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) = ffor
@@ -171,24 +179,29 @@ main =
         ks <- getPressedKeys =<< askDocument
         t <- liftIO getCurrentTime
         ticks <- clockLossy (1 / 50) t
-        rec craftables <-
+        rec primMined <- runReaderT (primResource $ primResources inventoryI) gameState
+            craftables <-
                 (`runReaderT` gameState) $
                 divClass "inventory" $ mapM resource $ allResources inventoryI
-            let (craftevs', craftovers', crafts) =
+            let (craftevs', craftovers', crafts') =
                     ( map resourcesConsumed craftables
                     , map ingredientsOfHoveredThing craftables
                     , map (unProd . resourceTotal) craftables)
                 craftevs = leftmost craftevs'
                 craftovers = mconcat craftovers'
+                crafts = ffor primMined (\p -> (p, 1)) : crafts'
             inventoryI <-
-                foldDyn insertInts (M.fromSet (const 0) allResourcesSet) $
+                foldDyn
+                    insertInts
+                    (unInventory (startingInventory gameState) <>
+                     M.fromSet (const 0) allResourcesSet) $
                 mergeList crafts
             let gameState =
                     GameState
                         { inventoryDyn = Inventory <$> inventoryI
                         , ingredientsUsed = craftevs
                         , hoveredItemIngredients = craftovers
-                        , startingInventory = Inventory $ mconcat [StonePickaxe =: 1]
+                        , startingInventory = Inventory mempty
                         , tick = (1 / 50) <$ updated ticks
                         , keysPressed = ks
                         }
@@ -291,6 +304,46 @@ progressBar (Just craftTime) autoCraft craftClick = do
             , ("style", pack ("transition-duration: " ++ show c ++ "s"))
             ]
 
+primResource ::
+       (MonadReader (GameState t) m, MonadWidget t m)
+    => [ResourceConfig' t]
+    -> m (Event t Resource)
+primResource rs = do
+    ctx <- ask
+    x <- workflowView $ go ctx rs (head rs)
+    switchHoldPromptly never x
+  where
+    findCraftable ctx rs = do
+        ms <-
+            sequence $
+            ffor rs $ \r ->
+                sample . current $
+                ffor (canMake r ctx) $ \c ->
+                    if c
+                        then Just r
+                        else Nothing
+        let choices = catMaybes ms
+        idx <- liftIO $ randomRIO (1, length choices)
+        return $ choices !! (idx - 1)
+    go ctx rs r@ResourceConfig {..} =
+        Workflow $ do
+            rec (e, pb) <-
+                    divClass "resource-wrapper" $
+                    elDynKlass' "div" (resourceClass r rCount ctx) $ do
+                        elAttr "img" ("src" =: resourceImg) $ return ()
+                        elClass "span" "badge upper" $ text resourceName
+                        elClass "span" "badge lower" $ display rCount
+                        progressBar craftTime autoCraft rClick
+                let canStartCrafting
+                        | craftable =
+                            zipDynWith (\a m -> not a && m) (pbActive pb) (canMake r ctx)
+                        | otherwise = constDyn False
+                    rClick = gate (current canStartCrafting) (domEvent Click e)
+                    buyEvent = 1 <$ pbComplete pb
+                    rCount = constDyn 0
+                produceNext <- performEvent $ buyEvent $> findCraftable ctx rs
+            return (resourceType <$ buyEvent, go ctx rs <$> produceNext)
+
 resource ::
        (Reflex t, MonadWidget t m, MonadReader (GameState t) m)
     => ResourceConfig' t
@@ -347,6 +400,6 @@ resource r@ResourceConfig {..}
             , ingredientsOfHoveredThing = rhovered
             , resourceTotal =
                   case producedResources of
-                      Just e -> ProducesOther e
+                      Just e' -> ProducesOther e'
                       Nothing -> ProducesSelf $ (,) resourceType <$> rCountEv
             }

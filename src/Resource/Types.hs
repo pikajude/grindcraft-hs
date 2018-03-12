@@ -1,6 +1,12 @@
+{-# Language CPP #-}
 {-# Language GeneralizedNewtypeDeriving #-}
 
-module Resource.Types where
+module Resource.Types
+    ( Ingredients(..)
+    , ResourceConfig(..)
+    , defaultResourceConfig
+    , craftTimesOf
+    ) where
 
 import Data.List.NonEmpty
 import qualified Data.Map as M
@@ -8,9 +14,12 @@ import Data.Map (Map)
 import Data.Semigroup (Semigroup)
 import Data.Set (Set)
 import Data.Text (Text)
-import Numeric.Natural
 import Reflex.Dom
-
+#ifdef ghcjs_HOST_OS
+type Natural = Integer
+#else
+import Numeric.Natural
+#endif
 newtype Ingredients r = Ingredients
     { unIngredients :: Map r Natural
     } deriving (Show, Monoid, Semigroup)
@@ -23,6 +32,7 @@ data ResourceConfig r t = ResourceConfig
     , resourceProduces :: Maybe (r, Maybe (Int, Int))
     , resourceDenomination :: Maybe Natural
     , resourceImg :: Text
+    , resourcePrim :: Bool
     , ingredientsControlVisibility :: Bool
     , craftable :: Bool
     , craftTime :: Maybe (Dynamic t Double)
@@ -46,11 +56,7 @@ defaultResourceConfig =
         }
 
 craftTimesOf ::
-       (Show a, Eq a, Ord a, Monad m)
-    => Double
-    -> Map a Double
-    -> m (Map a Natural)
-    -> m Double
+       (Eq a, Ord a, Monad m) => Double -> Map a Double -> m (Map a Natural) -> m Double
 craftTimesOf def times inven =
     ffor inven $ \i ->
         case M.intersection times $ M.filter (> 0) i of

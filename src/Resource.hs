@@ -4,6 +4,7 @@
 
 module Resource
     ( allResources
+    , primResources
     , ResourceConfig(..)
     , Ingredients(..)
     , Resource(..)

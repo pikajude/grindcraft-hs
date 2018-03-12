@@ -49,3 +49,6 @@ executable grindcraft
 
   if impl(ghc) && os(osx)
     ghc-options: -dynamic -threaded
+
+  if impl(ghcjs)
+    build-depends: ghcjs-dom-jsffi

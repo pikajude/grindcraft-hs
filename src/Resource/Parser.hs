@@ -30,14 +30,22 @@ attrs =
         , aImg <* nl
         , aDenom <* nl
         , aProd <* nl
+        , aPrim <* nl
         , RHidden <$ string "hidden" <* nl
         , RNocraft <$ string "nocraft" <* nl
-        , RPrim <$ string "prim" <* nl
         , aTime
         , aWants
         ]
   where
     aDenom = fmap RDenom $ string "denom" *> some (char ' ') *> decimal
+
+aPrim = fmap (uncurry RPrim) $ do
+    string "prim"
+    some (char ' ')
+    env <- some alphaNum
+    some (char ' ')
+    r <- decimal
+    return (env, r)
 
 aName =
     fmap RName $
@@ -113,7 +121,7 @@ data RField
     | RProduces (String, Maybe (Integer, Integer))
     | RHidden
     | RNocraft
-    | RPrim
+    | RPrim String Integer
     deriving (Show, Eq)
 
 parser =

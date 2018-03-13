@@ -8,6 +8,7 @@ module Resource
     , ResourceConfig(..)
     , Ingredients(..)
     , Resource(..)
+    , Environment(..)
     ) where
 
 import Resource.TH

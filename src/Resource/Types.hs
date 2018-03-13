@@ -14,17 +14,14 @@ import Data.Map (Map)
 import Data.Semigroup (Semigroup)
 import Data.Set (Set)
 import Data.Text (Text)
+import Natural
 import Reflex.Dom
-#ifdef ghcjs_HOST_OS
-type Natural = Integer
-#else
-import Numeric.Natural
-#endif
+
 newtype Ingredients r = Ingredients
     { unIngredients :: Map r Natural
     } deriving (Show, Monoid, Semigroup)
 
-data ResourceConfig r t = ResourceConfig
+data ResourceConfig r f e t = ResourceConfig
     { resourceType :: r
     , resourceName :: Text
     , resourceNeeds :: Map r Natural
@@ -32,14 +29,14 @@ data ResourceConfig r t = ResourceConfig
     , resourceProduces :: Maybe (r, Maybe (Int, Int))
     , resourceDenomination :: Maybe Natural
     , resourceImg :: Text
-    , resourcePrim :: Bool
+    , resourcePrim :: f (e, Integer)
     , ingredientsControlVisibility :: Bool
     , craftable :: Bool
     , craftTime :: Maybe (Dynamic t Double)
     , autoCraft :: Dynamic t Bool
     }
 
-defaultResourceConfig :: (Ord a, Reflex t) => ResourceConfig a t
+defaultResourceConfig :: (Ord a, Reflex t) => ResourceConfig a Maybe e t
 defaultResourceConfig =
     ResourceConfig
         { resourceType = error "resourceType not set"

@@ -21,7 +21,9 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Data.Align
 import Data.Bool
+import Data.Foldable (toList)
 import Data.Functor
+import Data.Functor.Identity
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as N
 import Data.Map.Strict (Map, fromList, showTreeWith)
@@ -32,7 +34,10 @@ import qualified Data.Set as S
 import Data.Text (Text, pack)
 import Data.Text.Encoding
 import Data.Time
-import Debug.Trace
+import GHCJS.DOM.EventM (event, on)
+import GHCJS.DOM.GlobalEventHandlers (keyDown, keyUp)
+import GHCJS.DOM.KeyboardEvent
+import GHCJS.DOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
 import Language.Javascript.JSaddle.Warp
 import Reflex.Dom hiding (mainWidgetWithHead, run)
 import Reflex.Dom.Contrib.CssClass
@@ -40,24 +45,16 @@ import Reflex.Dom.Main
 import System.Random
 
 import Css
-import Resource
 import Natural
-
-#ifdef ghcjs_HOST_OS
-import GHCJS.DOM.EventM (event, on)
-import GHCJS.DOM.GlobalEventHandlers (keyDown, keyUp)
-import GHCJS.DOM.KeyboardEvent
-import GHCJS.DOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
-#else
-import JSDOM.EventM (event, on)
-import JSDOM.GlobalEventHandlers (keyDown, keyUp)
-import JSDOM.KeyboardEvent
-import JSDOM.Types (IsEventTarget, IsGlobalEventHandlers, MonadJSM, liftJSM)
-#endif
+import Resource
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) = ffor
 
+groupBy :: (Foldable t, Ord b) => (a -> b) -> t a -> Map b [a]
+groupBy f = foldr (\rsc mp -> M.insertWith (<>) (f rsc) [rsc] mp) mempty
+
+lookupSet :: (Eq a, Foldable t) => a -> [(t a, b)] -> Maybe b
 lookupSet k ((p, v):xs)
     | k `elem` p = Just v
     | otherwise = lookupSet k xs
@@ -76,7 +73,9 @@ data Production t
 unProd (ProducesSelf e) = e
 unProd (ProducesOther e) = e
 
-type ResourceConfig' = ResourceConfig Resource
+type ResourceConfig' = ResourceConfig Resource Maybe Environment
+
+type PrimResourceConfig' = ResourceConfig Resource Identity Environment
 
 type Ingredients' = Ingredients Resource
 
@@ -115,13 +114,11 @@ insertInts =
                  r
                  (fromIntegral $ abs n))
 
-canMake ::
-       (MonadReader (GameState t) m, Reflex t) => ResourceConfig' t' -> m (Dynamic t Bool)
 canMake = fmap (fmap (> 0)) . canMakeN
 
 canMakeN ::
        (MonadReader (GameState t) m, Reflex t)
-    => ResourceConfig' t'
+    => ResourceConfig Resource f Environment t'
     -> m (Dynamic t Natural)
 canMakeN rsrc = do
     let (s, m) = resourceReqs rsrc
@@ -179,17 +176,23 @@ main =
         ks <- getPressedKeys =<< askDocument
         t <- liftIO getCurrentTime
         ticks <- clockLossy (1 / 50) t
-        rec primMined <- runReaderT (primResource $ primResources inventoryI) gameState
+        rec primMined <-
+                forM
+                    (M.toList $
+                     groupBy
+                         (fst . runIdentity . resourcePrim)
+                         (fmap assumePrim $ primResources inventoryI)) $ \(_, primset) ->
+                    runReaderT (primResource primset) gameState
             craftables <-
                 (`runReaderT` gameState) $
                 divClass "inventory" $ mapM resource $ allResources inventoryI
             let (craftevs', craftovers', crafts') =
-                    ( map resourcesConsumed craftables
-                    , map ingredientsOfHoveredThing craftables
-                    , map (unProd . resourceTotal) craftables)
+                    ( map resourcesConsumed $ toList craftables
+                    , map ingredientsOfHoveredThing $ toList craftables
+                    , map (unProd . resourceTotal) $ toList craftables)
                 craftevs = leftmost craftevs'
                 craftovers = mconcat craftovers'
-                crafts = ffor primMined (\p -> (p, 1)) : crafts'
+                crafts = primMined ++ crafts'
             inventoryI <-
                 foldDyn
                     insertInts
@@ -201,7 +204,8 @@ main =
                         { inventoryDyn = Inventory <$> inventoryI
                         , ingredientsUsed = craftevs
                         , hoveredItemIngredients = craftovers
-                        , startingInventory = Inventory mempty
+                        , startingInventory =
+                              Inventory $ mconcat [StonePickaxe =: 1, StoneAxe =: 1]
                         , tick = (1 / 50) <$ updated ticks
                         , keysPressed = ks
                         }
@@ -212,16 +216,11 @@ main =
             showTreeWith (\k x -> show k ++ " := " ++ show x) False False .
             M.filter (> 0) . unInventory <$>
             inventoryDyn gameState
+  where
+    assumePrim r = r {resourcePrim = Identity $ fromJust (resourcePrim r)}
 
-resourceReqs :: ResourceConfig' t -> ([S.Set Resource], Map Resource Natural)
 resourceReqs ResourceConfig {..} = (resourceWants, resourceNeeds)
 
-resourceClass ::
-       Reflex t
-    => ResourceConfig' t'
-    -> Dynamic t Natural
-    -> GameState t
-    -> Dynamic t CssClass
 resourceClass r@ResourceConfig {..} cnt ctx = do
     m <- canMake r ctx
     f <- hoveredItemIngredients ctx
@@ -306,26 +305,32 @@ progressBar (Just craftTime) autoCraft craftClick = do
 
 primResource ::
        (MonadReader (GameState t) m, MonadWidget t m)
-    => [ResourceConfig' t]
-    -> m (Event t Resource)
+    => [PrimResourceConfig' t]
+    -> m (Event t (Resource, Int))
 primResource rs = do
     ctx <- ask
-    x <- workflowView $ go ctx rs (head rs)
+    x <- workflowView $ go ctx (head rs)
     switchHoldPromptly never x
   where
-    findCraftable ctx rs = do
+    findCraftable ctx = do
         ms <-
             sequence $
             ffor rs $ \r ->
                 sample . current $
                 ffor (canMake r ctx) $ \c ->
                     if c
-                        then Just r
+                        then Just (snd $ runIdentity $ resourcePrim r, r)
                         else Nothing
         let choices = catMaybes ms
-        idx <- liftIO $ randomRIO (1, length choices)
-        return $ choices !! (idx - 1)
-    go ctx rs r@ResourceConfig {..} =
+        chosen <- liftIO $ freq choices
+        return chosen
+    freq :: [(Integer, x)] -> IO x
+    freq xs = randomRIO (1, sum (map fst xs)) >>= (`pick` xs)
+      where
+        pick n ((k, x):xs)
+            | n <= k = return x
+            | otherwise = pick (n - k) xs
+    go ctx r@ResourceConfig {..} =
         Workflow $ do
             rec (e, pb) <-
                     divClass "resource-wrapper" $
@@ -341,8 +346,22 @@ primResource rs = do
                     rClick = gate (current canStartCrafting) (domEvent Click e)
                     buyEvent = 1 <$ pbComplete pb
                     rCount = constDyn 0
-                produceNext <- performEvent $ buyEvent $> findCraftable ctx rs
-            return (resourceType <$ buyEvent, go ctx rs <$> produceNext)
+                producedResources <-
+                    case resourceProduces of
+                        Just (n, rng) ->
+                            fmap Just $
+                            performEventAsync $
+                            buyEvent <&> \cnt cb ->
+                                liftIO $ do
+                                    produced <- maybe (pure 1) randomRIO rng
+                                    cb (n, fromIntegral cnt * produced)
+                        Nothing -> pure Nothing
+                let resourceTotal =
+                        case producedResources of
+                            Just e' -> e'
+                            Nothing -> (,) resourceType <$> buyEvent
+                produceNext <- performEvent $ resourceTotal $> findCraftable ctx
+            return (resourceTotal, go ctx <$> produceNext)
 
 resource ::
        (Reflex t, MonadWidget t m, MonadReader (GameState t) m)

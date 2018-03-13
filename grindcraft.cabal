@@ -20,9 +20,8 @@ executable grindcraft
   build-depends:      base
                     , containers
                     , file-embed
+                    , ghcjs-dom
                     , indentation-trifecta
-                    , jsaddle
-                    , jsaddle-dom
                     , jsaddle-warp
                     , lifted-base
                     , monad-control
@@ -49,6 +48,3 @@ executable grindcraft
 
   if impl(ghc) && os(osx)
     ghc-options: -dynamic -threaded
-
-  if impl(ghcjs)
-    build-depends: ghcjs-dom-jsffi
